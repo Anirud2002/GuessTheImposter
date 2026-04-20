@@ -1,80 +1,152 @@
-# Imposter (Bare-Min Architecture)
+# GuessTheImposter
 
-A lightweight web-based multiplayer Imposter game starter using Ionic React + Node + Socket.IO.
+A real-time multiplayer party game built with **Ionic React**, **Fastify**, and **Socket.IO**.
 
-## Finalized Game Rules (from your decisions)
+Players join a room, one hidden imposter is assigned, everyone gives short clues over multiple rounds, and the lobby votes at the end.
 
-- No authentication
-- Shareable room code/link
-- Predefined categories only
-- Exactly **1 imposter** in every game
+## Tech Stack
+
+- `apps/web`: Ionic React + Vite + Socket.IO client
+- `apps/server`: Fastify + Socket.IO server
+- `packages/shared`: shared game engine + rules + tests
+
+## Monorepo Layout
+
+```text
+apps/
+	web/
+	server/
+packages/
+	shared/
+```
+
+## Current Gameplay Rules
+
+- No authentication (room code/link based)
+- Exactly **1 imposter** per game
 - Max players: **10**
-- Fixed player order
-- No clue submission phase
-- Mandatory voting (cannot skip, cannot self-vote)
-- Play through configured rounds, then final vote + elimination
-- Tie vote => imposter wins
-- Play again sends everyone back to lobby with settings editable by host
+- At least **3 players** required to start
+- Player names must be unique in a room (case-insensitive)
+- Host can drag-reorder player order in staging
+- Rounds use the same seeded secret word + imposter for the full match
+- Clue submission is turn-based
+- Clues are limited to **max 3 words**
+- Final vote is mandatory (cannot self-vote)
+- Tie/top-vote ambiguity => imposter wins
+- Vote timeout rule is enforced
+- If imposter disconnects during game/voting, crewmates win immediately
+- Play again returns everyone to lobby/staging
 
-## Monorepo Structure
+## Features Implemented
 
-- `apps/web` — Ionic React + Vite client
-- `apps/server` — Fastify + Socket.IO backend
-- `packages/shared` — game rules/state machine used by backend (and optionally web)
+- Room create/join with deep-link support
+- Rejoin identity support with active-seat protection
+- Host transfer and disconnect cleanup behavior
+- Turn progression that skips disconnected players
+- Final voting countdown + timeout resolution
+- Result reveal screen with secret word display
+- In-person mode and online mode support
+- "How to Play" screen
+- Shared engine test coverage for key game rules
 
-## What this starter already includes
+## Quick Start (Local)
 
-- Room create/join flow
-- Host-only game start
-- Shared game engine for room lifecycle
-- Round progression to final voting
-- Vote casting and final winner computation
-- Play-again reset to lobby
-- Unit tests for key winner/voting rules
+### Requirements
 
-## What is intentionally left as next implementation step
+- Node.js `>=20`
 
-- Flip-card role reveal UI with privacy overlay
-- Discussion/round timer UI screens
-- Final voting UI screen
-- Persistent reconnect identity (`localStorage` + reconnect token)
-- Redis store (currently in-memory `Map` for bare-min local dev)
-
-## Socket Event Contract (initial)
-
-- `room:create` `{ hostName, settings }`
-- `room:join` `{ roomCode, playerName }`
-- `room:get` `{ roomCode }`
-- `settings:update` `{ roomCode, actorId, settings }`
-- `game:start` `{ roomCode, actorId }`
-- `round:advance` `{ roomCode, actorId }`
-- `vote:cast` `{ roomCode, voterId, targetId }`
-- `game:finalize` `{ roomCode }`
-- `game:playAgain` `{ roomCode, actorId }`
-- Broadcast: `room:updated` with full room state
-
-## Local Run
+### Install
 
 ```powershell
 npm install
+```
+
+### Run server and web (two terminals)
+
+```powershell
 npm run dev:server
+```
+
+```powershell
 npm run dev:web
 ```
 
-Set web server URL if needed:
+If needed, point web to a custom backend:
 
 ```powershell
 $env:VITE_SERVER_URL="http://localhost:4000"
 npm run dev:web
 ```
 
-## Deployment (simple path)
+## Scripts
 
-- Frontend (`apps/web`): Vercel / Netlify
-- Backend (`apps/server`): Render / Railway / Fly.io
-- Data store: swap `roomStore` to Upstash Redis when moving from prototype to production
+From repository root:
 
----
+- `npm run dev:server` — start backend in watch mode
+- `npm run dev:web` — start web app
+- `npm test` — run shared engine tests
 
-If you want, next step I can implement the **3 key gameplay screens** end-to-end:
-1) role flip card, 2) round progress screen, 3) final voting + result screen.
+Workspace scripts:
+
+- `npm run build -w @imposter/web` — production web build
+- `npm run start -w @imposter/server` — run backend in production mode
+
+## Environment Variables
+
+### Web
+
+- `VITE_SERVER_URL` (optional)
+
+### Server
+
+- `PORT` (default: `4000`)
+- `ROOM_IDLE_TTL_MS` (default: 2h)
+- `ROOM_SWEEP_INTERVAL_MS` (default: 60s)
+- `VOTE_TIMEOUT_SWEEP_MS` (default: 1s)
+- `DISCONNECT_GRACE_MS` (default: 30s)
+
+## Deployment Notes
+
+This project currently uses an **in-memory room store** on the server.
+
+For production right now:
+
+- Run a **single backend instance** (no horizontal scaling yet)
+- Use a host that supports WebSockets
+- Set `VITE_SERVER_URL` in the web deployment
+
+Recommended providers:
+
+- Web: Vercel / Netlify / Cloudflare Pages
+- Server: Railway / Render / Fly.io / VPS
+
+## Health Check
+
+- `GET /health` → `{ "ok": true }`
+
+## Socket Events (Server)
+
+Client -> server:
+
+- `room:create`
+- `room:join`
+- `room:get`
+- `room:reorderPlayers`
+- `settings:update`
+- `game:start`
+- `round:advance`
+- `round:submitWord`
+- `vote:cast`
+- `game:finalize`
+- `game:playAgain`
+- `game:restart`
+
+Server -> client broadcasts:
+
+- `room:updated`
+- `room:playerDisconnected`
+- `room:serverError`
+
+## Next Step for Scale
+
+Before multi-instance backend scaling, move room state from in-memory store to Redis/shared storage.
