@@ -1,4 +1,4 @@
-# GuessTheImposter
+# ThatIsSus
 
 A real-time multiplayer party game built with **Ionic React**, **Fastify**, and **Socket.IO**.
 
@@ -147,6 +147,3 @@ Server -> client broadcasts:
 - `room:playerDisconnected`
 - `room:serverError`
 
-## Next Step for Scale
-
-Before multi-instance backend scaling, move room state from in-memory store to Redis/shared storage.

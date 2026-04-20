@@ -681,7 +681,7 @@ export default function App() {
       <IonPage>
         <IonContent className="ion-padding">
           <div className="app-logo-wrap">
-            <h1 className="app-logo-title">GuessTheImposter</h1>
+            <h1 className="app-logo-title">ThatIsSus</h1>
           </div>
           <div className={`app-shell ${room && isInStaging ? "staging-shell" : ""}`}>
           {!room ? (
@@ -697,7 +697,7 @@ export default function App() {
                 <IonCard className="how-to-play-card">
                   <IonCardHeader>
                     <IonCardTitle>How to Play 🎭</IonCardTitle>
-                    <IonCardSubtitle>Quick guide for GuessTheImposter</IonCardSubtitle>
+                    <IonCardSubtitle>Quick guide for ThatIsSus</IonCardSubtitle>
                   </IonCardHeader>
                   <IonCardContent>
                     <ul className="how-to-play-list">
