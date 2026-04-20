@@ -1,0 +1,17 @@
+{
+  "name": "imposter",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w @imposter/web",
+    "dev:server": "npm run dev -w @imposter/server",
+    "test": "npm test -w @imposter/shared"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
