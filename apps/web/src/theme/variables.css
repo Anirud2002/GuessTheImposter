@@ -777,3 +777,34 @@ strong {
     box-shadow: none !important;
   }
 }
+
+ion-loading.warmup-overlay {
+  --background: linear-gradient(150deg, rgba(21, 31, 79, 0.95), rgba(10, 43, 55, 0.93));
+  --color: #ffffff;
+  --spinner-color: #79e7ff;
+  --max-width: min(88vw, 420px);
+  --min-width: min(88vw, 360px);
+  --border-radius: 16px;
+  --box-shadow: 0 22px 54px rgba(3, 8, 27, 0.6);
+  --backdrop-opacity: 0.66;
+}
+
+ion-loading.warmup-overlay::part(backdrop) {
+  background: radial-gradient(circle at 50% 38%, rgba(63, 124, 255, 0.26), rgba(7, 11, 30, 0.9));
+}
+
+ion-loading.warmup-overlay::part(message) {
+  color: #ffffff;
+  font-size: 1.02rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  text-align: center;
+  text-shadow: 0 0 14px rgba(121, 231, 255, 0.46), 0 0 24px rgba(121, 231, 255, 0.25);
+}
+
+ion-loading.warmup-overlay .loading-wrapper,
+ion-loading.warmup-overlay .loading-content,
+ion-loading.warmup-overlay .loading-message {
+  color: #ffffff !important;
+}

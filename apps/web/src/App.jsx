@@ -10,6 +10,7 @@ import {
   IonContent,
   IonInput,
   IonItem,
+  IonLoading,
   IonReorder,
   IonReorderGroup,
   IonLabel,
@@ -42,9 +43,12 @@ const socket = io(serverUrl, {
 });
 const SOCKET_CONNECT_TIMEOUT_MS = 5000;
 const SOCKET_ACK_TIMEOUT_MS = 8000;
+const SERVER_IDLE_WARMUP_MS = 1000 * 60 * 15;
+const SERVER_WARMUP_TIMEOUT_MS = 30000;
 const HOW_TO_PLAY_ROUTE = "/how-to-play";
 
 const getPlayerStorageKey = (roomCode) => `imposter:player:${String(roomCode ?? "").toUpperCase()}`;
+const LAST_SERVER_REQUEST_AT_KEY = "imposter:lastServerRequestAt";
 const normalizePlayerName = (value) => String(value ?? "").trim().toLowerCase();
 
 const readStoredPlayerIdentity = (roomCode) => {
@@ -95,6 +99,24 @@ const clearStoredPlayerIdentity = (roomCode) => {
   }
 };
 
+const readLastServerRequestAt = () => {
+  try {
+    const raw = window.localStorage.getItem(LAST_SERVER_REQUEST_AT_KEY);
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+};
+
+const storeLastServerRequestAt = (timestamp) => {
+  try {
+    window.localStorage.setItem(LAST_SERVER_REQUEST_AT_KEY, String(Number(timestamp) || 0));
+  } catch {
+    // ignore storage errors
+  }
+};
+
 const defaultSettings = {
   totalRounds: 3,
   category: "random",
@@ -103,6 +125,18 @@ const defaultSettings = {
   maxPlayers: 10,
   numberOfImposters: 1
 };
+
+const SETTINGS_SYNC_KEYS = [
+  "totalRounds",
+  "category",
+  "gameMode",
+  "votingTimeSeconds",
+  "maxPlayers",
+  "numberOfImposters"
+];
+
+const areSettingsEqual = (left, right) =>
+  SETTINGS_SYNC_KEYS.every((key) => String(left?.[key]) === String(right?.[key]));
 
 const emitAck = (event, payload, timeoutMs = SOCKET_ACK_TIMEOUT_MS) =>
   new Promise((resolve, reject) => {
@@ -163,6 +197,7 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState("");
   const [warningToastMessage, setWarningToastMessage] = useState("");
   const [errorToastMessage, setErrorToastMessage] = useState("");
+  const [isWarmingServer, setIsWarmingServer] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
@@ -178,6 +213,8 @@ export default function App() {
   const [restartPromptText, setRestartPromptText] = useState("");
   const [isRestartingGame, setIsRestartingGame] = useState(false);
   const previousRoundRef = useRef({ status: null, currentRound: 0 });
+  const lastServerRequestAtRef = useRef(readLastServerRequestAt());
+  const warmupPromiseRef = useRef(null);
   const selectInterfaceOptions = { cssClass: "imposter-select-alert" };
   const threeWordWarningText = "Use up to 3 words to describe it.";
 
@@ -230,6 +267,64 @@ export default function App() {
     }
   };
 
+  const ensureServerAwake = async (force = false) => {
+    const now = Date.now();
+    const shouldWarm =
+      force || !lastServerRequestAtRef.current || now - lastServerRequestAtRef.current >= SERVER_IDLE_WARMUP_MS;
+
+    if (!shouldWarm) {
+      return true;
+    }
+
+    if (warmupPromiseRef.current) {
+      return warmupPromiseRef.current;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SERVER_WARMUP_TIMEOUT_MS);
+    setIsWarmingServer(true);
+
+    const warmupPromise = (async () => {
+      try {
+        const response = await fetch(`${serverUrl}/health`, {
+          method: "GET",
+          cache: "no-store",
+          signal: controller.signal
+        });
+
+        if (response.ok) {
+          const successfulPingAt = Date.now();
+          lastServerRequestAtRef.current = successfulPingAt;
+          storeLastServerRequestAt(successfulPingAt);
+          return true;
+        }
+        return false;
+      } catch {
+        return false;
+      } finally {
+        clearTimeout(timeout);
+        setIsWarmingServer(false);
+        warmupPromiseRef.current = null;
+      }
+    })();
+
+    warmupPromiseRef.current = warmupPromise;
+    return warmupPromise;
+  };
+
+  const emitAckWithWarmup = async (event, payload, timeoutMs = SOCKET_ACK_TIMEOUT_MS) => {
+    await ensureServerAwake();
+    const response = await emitAck(event, payload, timeoutMs);
+    const requestAt = Date.now();
+    lastServerRequestAtRef.current = requestAt;
+    storeLastServerRequestAt(requestAt);
+    return response;
+  };
+
+  useEffect(() => {
+    ensureServerAwake();
+  }, []);
+
   useEffect(() => {
     socket.on("room:updated", (nextRoom) => setRoom(nextRoom));
     socket.on("room:serverError", ({ message }) => {
@@ -281,6 +376,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!room || !playerId) {
+      return;
+    }
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+      return "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [room, playerId]);
+
+  useEffect(() => {
     if (!room?.roomCode) {
       return;
     }
@@ -291,10 +401,46 @@ export default function App() {
   }, [room]);
 
   useEffect(() => {
-    if (room?.settings) {
-      setSettings((prev) => ({ ...prev, ...room.settings }));
+    if (!room?.settings) {
+      return;
     }
-  }, [room]);
+
+    setSettings((prev) => {
+      const isHostInLobby = room.status === "lobby" && room.hostId === playerId;
+      if (isHostInLobby && !areSettingsEqual(prev, room.settings)) {
+        return prev;
+      }
+      return { ...prev, ...room.settings };
+    });
+  }, [room, playerId]);
+
+  useEffect(() => {
+    if (!room || !playerId) {
+      return;
+    }
+    if (room.status !== "lobby" || room.hostId !== playerId) {
+      return;
+    }
+    if (areSettingsEqual(settings, room.settings)) {
+      return;
+    }
+
+    const syncTimer = setTimeout(async () => {
+      setIsSavingSettings(true);
+      const response = await emitAckWithWarmup("settings:update", {
+        roomCode: room.roomCode,
+        actorId: playerId,
+        settings
+      });
+      setIsSavingSettings(false);
+
+      if (!response?.ok) {
+        showError(response?.error, "Could not save settings");
+      }
+    }, 250);
+
+    return () => clearTimeout(syncTimer);
+  }, [room, playerId, settings]);
 
   useEffect(() => {
     if (!room) {
@@ -324,8 +470,9 @@ export default function App() {
     setIsCreatingRoom(true);
     clearError();
     try {
+      await ensureServerAwake();
       await connectSocket();
-      const response = await emitAck("room:create", {
+      const response = await emitAckWithWarmup("room:create", {
         hostName: name,
         settings
       });
@@ -349,13 +496,14 @@ export default function App() {
     setIsJoiningRoom(true);
     clearError();
     try {
+      await ensureServerAwake();
       await connectSocket();
       const normalizedRoomCode = roomCode.toUpperCase();
       const storedIdentity = readStoredPlayerIdentity(normalizedRoomCode);
       const canReuseSeat =
         Boolean(storedIdentity?.playerId) &&
         normalizePlayerName(storedIdentity?.name) === normalizePlayerName(name);
-      const response = await emitAck("room:join", {
+      const response = await emitAckWithWarmup("room:join", {
         roomCode: normalizedRoomCode,
         playerName: name,
         playerId: canReuseSeat ? storedIdentity.playerId : null
@@ -381,20 +529,22 @@ export default function App() {
       return;
     }
 
-    setIsSavingSettings(true);
-    const settingsResponse = await emitAck("settings:update", {
-      roomCode: room.roomCode,
-      actorId: playerId,
-      settings
-    });
-    setIsSavingSettings(false);
+    if (!areSettingsEqual(settings, room.settings)) {
+      setIsSavingSettings(true);
+      const settingsResponse = await emitAckWithWarmup("settings:update", {
+        roomCode: room.roomCode,
+        actorId: playerId,
+        settings
+      });
+      setIsSavingSettings(false);
 
-    if (!settingsResponse?.ok) {
-      showError(settingsResponse?.error, "Could not save settings before starting");
-      return;
+      if (!settingsResponse?.ok) {
+        showError(settingsResponse?.error, "Could not save settings before starting");
+        return;
+      }
     }
 
-    const response = await emitAck("game:start", {
+    const response = await emitAckWithWarmup("game:start", {
       roomCode: room.roomCode,
       actorId: playerId
     });
@@ -448,7 +598,7 @@ export default function App() {
     reorderedPlayers.splice(to, 0, movedPlayer);
 
     setIsReorderingPlayers(true);
-    const response = await emitAck("room:reorderPlayers", {
+    const response = await emitAckWithWarmup("room:reorderPlayers", {
       roomCode: room.roomCode,
       actorId: playerId,
       orderedPlayerIds: reorderedPlayers.map((player) => player.id)
@@ -520,7 +670,7 @@ export default function App() {
   const resultTagline = endedByImposterDisconnect
     ? `${findPlayerName(gameResult?.imposterId)} disconnected and was the imposter.`
     : gameResult?.winner === "crewmates"
-      ? "🛡️ Truth prevailed."
+  ? "Truth prevailed."
       : "Deception wins.";
 
   const submitRoundWord = async () => {
@@ -537,7 +687,7 @@ export default function App() {
     }
 
     setIsSubmittingWord(true);
-    const response = await emitAck("round:submitWord", {
+    const response = await emitAckWithWarmup("round:submitWord", {
       roomCode: room.roomCode,
       playerId,
       text: normalized
@@ -564,7 +714,7 @@ export default function App() {
     }
 
     setIsCastingVote(true);
-    const response = await emitAck("vote:cast", {
+    const response = await emitAckWithWarmup("vote:cast", {
       roomCode: room.roomCode,
       voterId: playerId,
       targetId: selectedVoteTarget
@@ -586,7 +736,7 @@ export default function App() {
     }
 
     setIsPlayAgainLoading(true);
-    const response = await emitAck("game:playAgain", {
+    const response = await emitAckWithWarmup("game:playAgain", {
       roomCode: room.roomCode,
       actorId: playerId
     });
@@ -608,7 +758,7 @@ export default function App() {
     }
 
     setIsRestartingGame(true);
-    const response = await emitAck("game:restart", {
+    const response = await emitAckWithWarmup("game:restart", {
       roomCode: room.roomCode,
       actorId: playerId
     });
@@ -1178,6 +1328,13 @@ export default function App() {
           </div>
 
           <IonToast isOpen={Boolean(toastMessage)} message={toastMessage} duration={1600} onDidDismiss={() => setToastMessage("")} />
+          <IonLoading
+            isOpen={isWarmingServer}
+            cssClass="warmup-overlay"
+            message="Waking up server…"
+            spinner="crescent"
+            backdropDismiss={false}
+          />
           <IonToast
             isOpen={Boolean(warningToastMessage)}
             message={warningToastMessage}
