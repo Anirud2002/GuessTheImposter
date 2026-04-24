@@ -294,3 +294,64 @@ test("cannot start game with fewer than 3 connected players", () => {
 
   assert.throws(() => startGame(room, room.hostId), /at least 3 players are required to start/i);
 });
+
+test("imposter wins immediately when imposter reveals the secret word", () => {
+  const room = createRoom({ hostName: "Host" });
+  joinRoom(room, "P2");
+  joinRoom(room, "P3");
+
+  startGame(room, room.hostId);
+
+  const activeRound = room.rounds[room.rounds.length - 1];
+  const imposterId = activeRound.imposterId;
+  const imposterIndex = activeRound.turnOrder.indexOf(imposterId);
+
+  for (let i = 0; i < imposterIndex; i += 1) {
+    submitRoundWord(room, activeRound.turnOrder[i], `clue${i + 1}`);
+  }
+
+  const result = submitRoundWord(room, imposterId, activeRound.word);
+
+  assert.equal(result.gameEnded, true);
+  assert.equal(room.status, ROOM_STATUS.ENDED);
+  assert.equal(room.finalVote.result.winner, "imposter");
+  assert.equal(room.finalVote.result.reason, "secret_word_revealed");
+  assert.equal(room.finalVote.result.revealedByPlayerId, imposterId);
+});
+
+test("imposter wins immediately when a crewmate reveals the secret word", () => {
+  const room = createRoom({ hostName: "Host" });
+  const p2 = joinRoom(room, "P2");
+  joinRoom(room, "P3");
+
+  startGame(room, room.hostId);
+
+  const activeRound = room.rounds[room.rounds.length - 1];
+  const imposterId = activeRound.imposterId;
+  const crewmateId = p2.id === imposterId ? room.hostId : p2.id;
+  const crewmateIndex = activeRound.turnOrder.indexOf(crewmateId);
+
+  for (let i = 0; i < crewmateIndex; i += 1) {
+    submitRoundWord(room, activeRound.turnOrder[i], `hint${i + 1}`);
+  }
+
+  const result = submitRoundWord(room, crewmateId, activeRound.word);
+
+  assert.equal(result.gameEnded, true);
+  assert.equal(room.status, ROOM_STATUS.ENDED);
+  assert.equal(room.finalVote.result.winner, "imposter");
+  assert.equal(room.finalVote.result.reason, "secret_word_revealed");
+  assert.equal(room.finalVote.result.revealedByPlayerId, crewmateId);
+});
+
+test("host name must be non-empty and reasonably sized", () => {
+  assert.throws(() => createRoom({ hostName: "   " }), /player name is required/i);
+  assert.throws(() => createRoom({ hostName: "A".repeat(25) }), /player name is too long/i);
+});
+
+test("joining player name must be non-empty and reasonably sized", () => {
+  const room = createRoom({ hostName: "Host" });
+
+  assert.throws(() => joinRoom(room, "   "), /player name is required/i);
+  assert.throws(() => joinRoom(room, "B".repeat(25)), /player name is too long/i);
+});

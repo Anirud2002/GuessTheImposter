@@ -27,6 +27,7 @@ packages/
 - Max players: **10**
 - At least **3 players** required to start
 - Player names must be unique in a room (case-insensitive)
+- Player names are required and capped at 24 characters
 - Host can drag-reorder player order in staging
 - Rounds use the same seeded secret word + imposter for the full match
 - Clue submission is turn-based
@@ -35,13 +36,14 @@ packages/
 - Tie/top-vote ambiguity => imposter wins
 - Vote timeout rule is enforced
 - If imposter disconnects during game/voting, crewmates win immediately
+- If host disconnects, the room is closed and all players are returned to home
 - Play again returns everyone to lobby/staging
 
 ## Features Implemented
 
 - Room create/join with deep-link support
 - Rejoin identity support with active-seat protection
-- Host transfer and disconnect cleanup behavior
+- Host-disconnect room shutdown + player-disconnect cleanup behavior
 - Turn progression that skips disconnected players
 - Final voting countdown + timeout resolution
 - Result reveal screen with secret word display
@@ -85,6 +87,7 @@ From repository root:
 - `npm run dev:server` — start backend in watch mode
 - `npm run dev:web` — start web app
 - `npm test` — run shared engine tests
+- `npm run smoke:health` — smoke-check `GET /health` with retries
 
 Workspace scripts:
 
@@ -104,6 +107,8 @@ Workspace scripts:
 - `ROOM_SWEEP_INTERVAL_MS` (default: 60s)
 - `VOTE_TIMEOUT_SWEEP_MS` (default: 1s)
 - `DISCONNECT_GRACE_MS` (default: 30s)
+
+Server env values are validated at startup (integer + range checks).
 
 ## Deployment Notes
 
@@ -144,6 +149,7 @@ Client -> server:
 Server -> client broadcasts:
 
 - `room:updated`
+- `room:hostDisconnected`
 - `room:playerDisconnected`
 - `room:serverError`
 

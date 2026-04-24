@@ -19,12 +19,26 @@ import {
 } from "@imposter/shared";
 import { deleteRoom, getRoom, listRooms, saveRoom } from "./roomStore.js";
 
+const readPositiveIntegerEnv = (name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) => {
+  const raw = process.env[name];
+  if (raw == null || raw === "") {
+    return fallback;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}`);
+  }
+
+  return parsed;
+};
+
 const app = Fastify({ logger: true });
-const port = Number(process.env.PORT ?? 4000);
-const ROOM_IDLE_TTL_MS = Number(process.env.ROOM_IDLE_TTL_MS ?? 1000 * 60 * 60 * 2);
-const ROOM_SWEEP_INTERVAL_MS = Number(process.env.ROOM_SWEEP_INTERVAL_MS ?? 1000 * 60);
-const VOTE_TIMEOUT_SWEEP_MS = Number(process.env.VOTE_TIMEOUT_SWEEP_MS ?? 1000);
-const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS ?? 1000 * 30);
+const port = readPositiveIntegerEnv("PORT", 4000, { min: 1, max: 65535 });
+const ROOM_IDLE_TTL_MS = readPositiveIntegerEnv("ROOM_IDLE_TTL_MS", 1000 * 60 * 60 * 2);
+const ROOM_SWEEP_INTERVAL_MS = readPositiveIntegerEnv("ROOM_SWEEP_INTERVAL_MS", 1000 * 60);
+const VOTE_TIMEOUT_SWEEP_MS = readPositiveIntegerEnv("VOTE_TIMEOUT_SWEEP_MS", 1000);
+const DISCONNECT_GRACE_MS = readPositiveIntegerEnv("DISCONNECT_GRACE_MS", 1000 * 30);
 
 const pendingDisconnectRemovals = new Map();
 
@@ -42,6 +56,7 @@ const EXPECTED_GAME_ERRORS = [
   /no active round/i,
   /word is required/i,
   /word is too long/i,
+  /only use three words/i,
   /it is not your turn/i,
   /round is already complete/i,
   /voting is not open/i,
@@ -53,6 +68,9 @@ const EXPECTED_GAME_ERRORS = [
   /invalid game mode/i,
   /maxplayers cannot exceed/i,
   /supports exactly 1 imposter/i,
+  /player name is required/i,
+  /player name is too long/i,
+  /that name is already taken/i,
   /only host can reorder players/i,
   /player order can only be changed in lobby/i,
   /invalid player order/i
@@ -247,7 +265,9 @@ const start = async () => {
         }
         const result = submitRoundWord(room, playerId, text);
         let transition = null;
-        if (result.roundComplete) {
+        if (result.gameEnded) {
+          transition = "game_ended";
+        } else if (result.roundComplete) {
           transition = nextRoundOrVoting(room, room.hostId);
         }
         saveRoom(room);
@@ -346,6 +366,19 @@ const start = async () => {
 
       const currentRoom = getRoom(roomCode);
       const disconnectedPlayer = currentRoom?.players.find((player) => player.id === playerId);
+
+      // Product decision: if host disconnects, end the room for everyone immediately.
+      if (currentRoom && disconnectedPlayer && currentRoom.hostId === playerId) {
+        for (const player of currentRoom.players) {
+          clearPendingRemoval(roomCode, player.id);
+        }
+        io.to(roomCode).emit("room:hostDisconnected", {
+          message: "host disconnected"
+        });
+        deleteRoom(roomCode);
+        return;
+      }
+
       let endedByImposterDisconnect = false;
       if (disconnectedPlayer) {
         disconnectedPlayer.isConnected = false;

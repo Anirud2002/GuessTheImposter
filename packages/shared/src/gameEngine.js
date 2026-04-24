@@ -4,6 +4,19 @@ const randomId = (prefix) => `${prefix}_${Math.random().toString(36).slice(2, 10
 
 const pickRandom = (list) => list[Math.floor(Math.random() * list.length)];
 const normalizePlayerName = (value) => String(value ?? "").trim().toLowerCase();
+const normalizeSecretText = (value) => String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+const sanitizePlayerName = (value) => String(value ?? "").trim();
+
+const assertValidPlayerName = (value) => {
+  const trimmedName = sanitizePlayerName(value);
+  if (!trimmedName) {
+    throw new Error("Player name is required");
+  }
+  if (trimmedName.length > 24) {
+    throw new Error("Player name is too long");
+  }
+  return trimmedName;
+};
 
 const getWordsForCategory = (category) => {
   if (category === "random") {
@@ -39,6 +52,7 @@ const validateSettings = (settings) => {
 };
 
 export const createRoom = ({ hostName, roomCode, settings = {} }) => {
+  const sanitizedHostName = assertValidPlayerName(hostName);
   const mergedSettings = { ...DEFAULT_SETTINGS, ...settings, numberOfImposters: 1, maxPlayers: 10 };
   validateSettings(mergedSettings);
 
@@ -50,13 +64,13 @@ export const createRoom = ({ hostName, roomCode, settings = {} }) => {
     players: [
       {
         id: hostId,
-        name: hostName,
+        name: sanitizedHostName,
         isConnected: true,
         joinedAt: Date.now()
       }
     ],
     settings: mergedSettings,
-  gameSeed: null,
+    gameSeed: null,
     currentRound: 0,
     rounds: [],
     finalVote: {
@@ -70,20 +84,21 @@ export const createRoom = ({ hostName, roomCode, settings = {} }) => {
 };
 
 export const joinRoom = (room, playerName) => {
+  const sanitizedPlayerName = assertValidPlayerName(playerName);
   if (room.status !== ROOM_STATUS.LOBBY) {
     throw new Error("Cannot join after game starts");
   }
   if (room.players.length >= room.settings.maxPlayers) {
     throw new Error("Room is full");
   }
-  const normalizedIncomingName = normalizePlayerName(playerName);
+  const normalizedIncomingName = normalizePlayerName(sanitizedPlayerName);
   const isDuplicateName = room.players.some((player) => normalizePlayerName(player.name) === normalizedIncomingName);
   if (isDuplicateName) {
     throw new Error("That name is already taken");
   }
   const player = {
     id: randomId("player"),
-    name: playerName,
+    name: sanitizedPlayerName,
     isConnected: true,
     joinedAt: Date.now()
   };
@@ -251,6 +266,26 @@ export const submitRoundWord = (room, playerId, text) => {
     submittedAt: Date.now()
   });
 
+  const submittedText = normalizeSecretText(normalized);
+  const secretWord = normalizeSecretText(round.word);
+  if (submittedText === secretWord) {
+    room.status = ROOM_STATUS.ENDED;
+    room.finalVote.result = {
+      imposterId: round.imposterId,
+      topTargets: [],
+      tally: {},
+      winner: "imposter",
+      reason: "secret_word_revealed",
+      revealedByPlayerId: playerId
+    };
+    room.updatedAt = Date.now();
+    return {
+      roundComplete: true,
+      gameEnded: true,
+      nextPlayerId: null
+    };
+  }
+
   if (round.submissions.length >= eligibleTurnOrder.length) {
     round.state = "complete";
   }
@@ -259,6 +294,7 @@ export const submitRoundWord = (room, playerId, text) => {
   const nextEligibleTurnOrder = getEligibleTurnOrder(room, round);
   return {
     roundComplete: round.state === "complete",
+    gameEnded: false,
     nextPlayerId: round.state === "active" ? nextEligibleTurnOrder[round.submissions.length] : null
   };
 };

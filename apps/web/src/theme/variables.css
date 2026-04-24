@@ -380,6 +380,20 @@ strong {
   margin-top: 0.85rem;
 }
 
+.host-round-actions {
+  margin: 0.6rem 0 0.25rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.host-round-actions ion-button {
+  --background: rgba(255, 255, 255, 0.04);
+  --border-color: rgba(192, 214, 255, 0.5);
+  --color: #e8f2ff;
+  --border-radius: 12px;
+  font-weight: 700;
+}
+
 .round-separator {
   text-align: center;
   color: #9bd8ff;
@@ -807,4 +821,19 @@ ion-loading.warmup-overlay .loading-wrapper,
 ion-loading.warmup-overlay .loading-content,
 ion-loading.warmup-overlay .loading-message {
   color: #ffffff !important;
+}
+
+ion-toast.neutral-toast {
+  --background: #ffffff;
+  --color: #111111;
+  --button-color: #111111;
+  --border-width: 1px;
+  --border-style: solid;
+  --border-color: rgba(0, 0, 0, 0.14);
+  --box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+}
+
+ion-toast.neutral-toast::part(message) {
+  color: #111111;
+  font-weight: 600;
 }

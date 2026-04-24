@@ -213,6 +213,8 @@ export default function App() {
   const [restartPromptText, setRestartPromptText] = useState("");
   const [isRestartingGame, setIsRestartingGame] = useState(false);
   const previousRoundRef = useRef({ status: null, currentRound: 0 });
+  const roomRef = useRef(null);
+  const roomCodeRef = useRef("");
   const lastServerRequestAtRef = useRef(readLastServerRequestAt());
   const warmupPromiseRef = useRef(null);
   const selectInterfaceOptions = { cssClass: "imposter-select-alert" };
@@ -228,6 +230,12 @@ export default function App() {
     }
     if (/room is full/i.test(text)) {
       return "Room is full.";
+    }
+    if (/player name is required/i.test(text)) {
+      return "Name is required.";
+    }
+    if (/player name is too long/i.test(text)) {
+      return "Name must be 24 characters or fewer.";
     }
     return text;
   };
@@ -248,8 +256,13 @@ export default function App() {
     setError("");
   };
 
+  useEffect(() => {
+    roomRef.current = room;
+    roomCodeRef.current = roomCode;
+  }, [room, roomCode]);
+
   const resetToHomeWithError = (message) => {
-    const activeRoomCode = room?.roomCode ?? roomCode;
+    const activeRoomCode = roomRef.current?.roomCode ?? roomCodeRef.current;
     clearStoredPlayerIdentity(activeRoomCode);
     setRoom(null);
     setPlayerId(null);
@@ -326,27 +339,38 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    socket.on("room:updated", (nextRoom) => setRoom(nextRoom));
-    socket.on("room:serverError", ({ message }) => {
+    // Keep one stable set of socket listeners for the app lifetime.
+    const handleRoomUpdated = (nextRoom) => setRoom(nextRoom);
+    const handleServerError = ({ message }) => {
       resetToHomeWithError(message);
-    });
-    socket.on("room:playerDisconnected", ({ playerName }) => {
+    };
+    const handleHostDisconnected = ({ message }) => {
+      resetToHomeWithError(message || "host disconnected");
+    };
+    const handlePlayerDisconnected = ({ playerName }) => {
       if (!playerName) {
         return;
       }
       setErrorToastMessage(`${playerName} disconnected`);
-    });
-    socket.on("connect_error", () => {
+    };
+    const handleConnectError = () => {
       showError("Could not connect to game server. Check backend URL/server status.");
-    });
+    };
+
+    socket.on("room:updated", handleRoomUpdated);
+    socket.on("room:serverError", handleServerError);
+    socket.on("room:hostDisconnected", handleHostDisconnected);
+    socket.on("room:playerDisconnected", handlePlayerDisconnected);
+    socket.on("connect_error", handleConnectError);
 
     return () => {
-      socket.off("room:updated");
-      socket.off("room:serverError");
-      socket.off("room:playerDisconnected");
-      socket.off("connect_error");
+      socket.off("room:updated", handleRoomUpdated);
+      socket.off("room:serverError", handleServerError);
+      socket.off("room:hostDisconnected", handleHostDisconnected);
+      socket.off("room:playerDisconnected", handlePlayerDisconnected);
+      socket.off("connect_error", handleConnectError);
     };
-  }, [room, roomCode]);
+  }, []);
 
   useEffect(() => {
     const pathCode = window.location.pathname.replace(/^\/+/, "").split("/")[0] ?? "";
@@ -374,21 +398,6 @@ export default function App() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
-
-  useEffect(() => {
-    if (!room || !playerId) {
-      return;
-    }
-
-    const handleBeforeUnload = (event) => {
-      event.preventDefault();
-      event.returnValue = "";
-      return "";
-    };
-
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [room, playerId]);
 
   useEffect(() => {
     if (!room?.roomCode) {
@@ -472,10 +481,14 @@ export default function App() {
     try {
       await ensureServerAwake();
       await connectSocket();
-      const response = await emitAckWithWarmup("room:create", {
-        hostName: name,
+      const hostName = name.trim();
+      const response = await emitAck("room:create", {
+        hostName,
         settings
       });
+      const requestAt = Date.now();
+      lastServerRequestAtRef.current = requestAt;
+      storeLastServerRequestAt(requestAt);
       if (!response?.ok) {
         showError(response?.error, "Could not create room");
         return;
@@ -483,7 +496,7 @@ export default function App() {
       setRoom(response.room);
       setPlayerId(response.playerId);
       setRoomCode(response.room.roomCode);
-      storePlayerIdentity(response.room.roomCode, response.playerId, name);
+      storePlayerIdentity(response.room.roomCode, response.playerId, hostName);
       clearError();
     } catch (requestError) {
       showError(requestError?.message, "Could not create room");
@@ -498,16 +511,20 @@ export default function App() {
     try {
       await ensureServerAwake();
       await connectSocket();
+      const playerName = name.trim();
       const normalizedRoomCode = roomCode.toUpperCase();
       const storedIdentity = readStoredPlayerIdentity(normalizedRoomCode);
       const canReuseSeat =
         Boolean(storedIdentity?.playerId) &&
-        normalizePlayerName(storedIdentity?.name) === normalizePlayerName(name);
-      const response = await emitAckWithWarmup("room:join", {
+        normalizePlayerName(storedIdentity?.name) === normalizePlayerName(playerName);
+      const response = await emitAck("room:join", {
         roomCode: normalizedRoomCode,
-        playerName: name,
+        playerName,
         playerId: canReuseSeat ? storedIdentity.playerId : null
       });
+      const requestAt = Date.now();
+      lastServerRequestAtRef.current = requestAt;
+      storeLastServerRequestAt(requestAt);
       if (!response?.ok) {
         showError(response?.error, "Could not join room");
         return;
@@ -515,7 +532,7 @@ export default function App() {
       setRoom(response.room);
       setPlayerId(response.playerId);
       setRoomCode(response.room.roomCode);
-      storePlayerIdentity(response.room.roomCode, response.playerId, name);
+      storePlayerIdentity(response.room.roomCode, response.playerId, playerName);
       clearError();
     } catch (requestError) {
       showError(requestError?.message, "Could not join room");
@@ -665,10 +682,16 @@ export default function App() {
   const winnerSide = gameResult?.winner === "crewmates" ? "🛡️ Crewmates" : "🕵️ Imposter";
   const winnerClass = gameResult?.winner === "crewmates" ? "winner-crewmates" : "winner-imposter";
   const endedByImposterDisconnect = gameResult?.reason === "imposter_disconnected";
+  const endedByWordReveal = gameResult?.reason === "secret_word_revealed";
+  const wordRevealedByImposter = endedByWordReveal && gameResult?.revealedByPlayerId === gameResult?.imposterId;
   const topVotedNames = (gameResult?.topTargets ?? []).map((id) => findPlayerName(id)).join(", ") || "None";
   const revealedSecretWord = room?.gameSeed?.word ?? room?.rounds?.[0]?.word ?? "Unknown";
   const resultTagline = endedByImposterDisconnect
     ? `${findPlayerName(gameResult?.imposterId)} disconnected and was the imposter.`
+    : endedByWordReveal
+      ? wordRevealedByImposter
+        ? `${findPlayerName(gameResult?.imposterId)} was the imposter and cracked the secret word. Deception executed flawlessly.`
+        : `${findPlayerName(gameResult?.revealedByPlayerId)} accidentally revealed the secret word. The imposter seized the moment.`
     : gameResult?.winner === "crewmates"
   ? "Truth prevailed."
       : "Deception wins.";
@@ -749,7 +772,6 @@ export default function App() {
 
     setSelectedVoteTarget("");
     clearError();
-    setToastMessage("Back to staging");
   };
 
   const restartGame = async () => {
@@ -771,7 +793,6 @@ export default function App() {
 
     setIsCardRevealed(false);
     clearError();
-    setToastMessage("Back to staging");
   };
 
   const promptRestart = (message) => {
@@ -851,13 +872,15 @@ export default function App() {
                   </IonCardHeader>
                   <IonCardContent>
                     <ul className="how-to-play-list">
-                      <li>👥 <strong>Gather at least 3 players</strong> and have the host create a room.</li>
-                      <li>🔗 Share the room link or code so everyone can join.</li>
-                      <li>🕵️ Every round, one hidden <strong>Imposter</strong> is assigned — everyone else gets the secret word.</li>
-                      <li>📝 On your turn, enter a clue word that matches the secret without making it too obvious.</li>
-                      <li>🗣️ After all rounds, discuss and <strong>vote</strong> who you think the imposter is.</li>
-                      <li>⏱️ Vote before the timer ends — if time runs out and imposter is not top-voted, imposter wins.</li>
-                      <li>🏆 Crewmates win by identifying the imposter; otherwise, the imposter wins.</li>
+                      <li>👥 Gather at least <strong>3 players</strong>. Names must be unique in the room and up to 24 characters.</li>
+                      <li>🔗 Host creates a room and shares the room link/code.</li>
+                      <li>🕵️ One hidden <strong>Imposter</strong> is assigned for the full match; everyone else gets the same secret word.</li>
+                      <li>📝 On your turn, submit a clue in <strong>up to 3 words</strong> (max 32 chars).</li>
+                      <li>⚠️ If anyone submits the <strong>exact secret word</strong>, the game ends instantly and the imposter wins.</li>
+                      <li>🗣️ After all rounds, discuss and vote for exactly one player (not yourself).</li>
+                      <li>⏱️ Voting is timed. If timer expires and imposter is not top-voted, imposter wins.</li>
+                      <li>🏆 Crewmates win by catching the imposter. If the imposter disconnects mid-game, crewmates win immediately.</li>
+                      <li>🚨 If the host disconnects, the room closes and everyone returns to home.</li>
                     </ul>
                   </IonCardContent>
                 </IonCard>
@@ -972,6 +995,24 @@ export default function App() {
                     </p>
                   </IonText>
 
+                  {isHost ? (
+                    <div className="host-round-actions">
+                      <IonButton
+                        fill="outline"
+                        onClick={() =>
+                          promptRestart(
+                            isInPersonMode
+                              ? "Restart and return everyone to staging with a new word?"
+                              : "Restart this online match and return everyone to staging?"
+                          )
+                        }
+                        disabled={isRestartingGame}
+                      >
+                        {isInPersonMode ? "Play Again (New Word)" : "Restart Match"}
+                      </IonButton>
+                    </div>
+                  ) : null}
+
                   {isInPersonMode ? (
                     <IonCard className="chat-card">
                       <IonCardHeader>
@@ -981,20 +1022,11 @@ export default function App() {
                         <IonText color="medium">
                           <p>Use this device to reveal cards in person, then play discussion/voting offline.</p>
                         </IonText>
-                        {isHost ? (
-                          <IonButton
-                            expand="block"
-                            fill="outline"
-                            onClick={() => promptRestart("Restart and return everyone to staging with a new word?")}
-                            disabled={isRestartingGame}
-                          >
-                            Play Again (New Word)
-                          </IonButton>
-                        ) : (
+                        {!isHost ? (
                           <IonText color="medium">
                             <p>Host can start a fresh round anytime.</p>
                           </IonText>
-                        )}
+                        ) : null}
                       </IonCardContent>
                     </IonCard>
                   ) : (
@@ -1071,16 +1103,6 @@ export default function App() {
                           </div>
                         )}
 
-                        {isHost ? (
-                          <IonButton
-                            expand="block"
-                            fill="outline"
-                            onClick={() => promptRestart("Restart this online match and return everyone to staging?")}
-                            disabled={isRestartingGame}
-                          >
-                            Restart Match
-                          </IonButton>
-                        ) : null}
                       </IonCardContent>
                     </IonCard>
                   )}
@@ -1149,7 +1171,7 @@ export default function App() {
                     <span className="label">Imposter was</span>
                     <strong>{findPlayerName(gameResult?.imposterId)}</strong>
                   </div>
-                  {!endedByImposterDisconnect ? (
+                  {!endedByImposterDisconnect && !endedByWordReveal ? (
                     <div className="result-summary-row">
                       <span className="label">Top voted</span>
                       <strong>{topVotedNames}</strong>
@@ -1327,7 +1349,13 @@ export default function App() {
           )}
           </div>
 
-          <IonToast isOpen={Boolean(toastMessage)} message={toastMessage} duration={1600} onDidDismiss={() => setToastMessage("")} />
+          <IonToast
+            cssClass="neutral-toast"
+            isOpen={Boolean(toastMessage)}
+            message={toastMessage}
+            duration={1600}
+            onDidDismiss={() => setToastMessage("")}
+          />
           <IonLoading
             isOpen={isWarmingServer}
             cssClass="warmup-overlay"
@@ -1336,9 +1364,9 @@ export default function App() {
             backdropDismiss={false}
           />
           <IonToast
+            cssClass="neutral-toast"
             isOpen={Boolean(warningToastMessage)}
             message={warningToastMessage}
-            color="warning"
             duration={2200}
             onDidDismiss={() => setWarningToastMessage("")}
           />
